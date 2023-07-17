@@ -33,10 +33,16 @@ void makeFlarmNetOutputService(void) {
 	serviceListen(flarm_io.flarm_net_service, Modes.net_bind_address, flarm_io.net_output_flarm_ports);
 }
 
-struct net_service *makeNmeaSerialInputOutputService(read_fn read_handler)
+struct net_service *makeNmeaSerialPriInputOutputService(read_fn read_handler)
 {
-    return serviceInit("ASCII NMEA serial IO", &flarm_io.flarm_serial_out, send_flarm_heartbeat, READ_MODE_ASCII, "\n", read_handler);
+    return serviceInit("ASCII NMEA serial IO primary", &flarm_io.flarm_serial_pri_out, send_flarm_heartbeat, READ_MODE_ASCII, "\n", read_handler);
 }
+
+struct net_service *makeNmeaSerialSecInputOutputService(read_fn read_handler)
+{
+    return serviceInit("ASCII NMEA serial IO secondary", &flarm_io.flarm_serial_sec_out, send_flarm_heartbeat, READ_MODE_ASCII, "\n", read_handler);
+}
+
 
 struct net_service *makeNmeaSerialInputService(read_fn read_handler)
 {
@@ -46,6 +52,7 @@ struct net_service *makeNmeaSerialInputService(read_fn read_handler)
 void writeFlarmOutput(struct net_service *service, const char *nmea_message) {
     char *data;
     int len = strlen(nmea_message);
+    if (!service) return;
     if (!service->writer)
         return;
     data = prepareWrite(service->writer, len);
@@ -59,7 +66,7 @@ int set_interface_attribs(int fd, int speed) {
 	struct termios tty;
 
 	if (tcgetattr(fd, &tty) < 0) {
-		fprintf(stderr, "Error from tcgetattr: %s\n", strerror(errno));
+		fprintf(stderr, "[ERR] Error from tcgetattr: %s\n", strerror(errno));
 		return -1;
 	}
 
@@ -88,7 +95,7 @@ int set_interface_attribs(int fd, int speed) {
 	tty.c_cc[VEOF] = 0x04;
 
 	if (tcsetattr(fd, TCSANOW, &tty) != 0) {
-		fprintf(stderr, "Error from tcgetattr: %s\n", strerror(errno));
+		fprintf(stderr, "[ERR] Error from tcgetattr: %s\n", strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -100,33 +107,36 @@ void set_blocking (int fd, int should_block)
         memset (&tty, 0, sizeof tty);
         if (tcgetattr (fd, &tty) != 0)
         {
-        	fprintf(stderr, "error %d from tggetattr", errno);
+        	fprintf(stderr, "[WARN] Error %d from tggetattr", errno);
                 return;
         }
 
         tty.c_cc[VMIN]  = should_block ? 1 : 0;
-        tty.c_cc[VTIME] = 5;            // 0.5 seconds read timeout
+        tty.c_cc[VTIME] = 0;            // 0.5 seconds read timeout
 
         if (tcsetattr (fd, TCSANOW, &tty) != 0)
-        	fprintf(stderr, "error %d setting term attributes", errno);
+        	fprintf(stderr, "[WARN] Error %d setting term attributes", errno);
 }
 
 struct client *createSerialClient(struct net_service *service, char *port) {
     struct client *c;
 
     if (!(c = (struct client *) malloc(sizeof(*c)))) {
-        fprintf(stderr, "Out of memory allocating a new %s serial client %s\n", service->descr, port);
-        exit(1);
+        fprintf(stderr, "[ERR] Out of memory allocating a new %s serial client %s\n", service->descr, port);
+        return NULL;
     }
     c->fd = open(port, O_RDWR | O_NOCTTY | O_NDELAY);
     if (c->fd < 0) {
-        fprintf(stderr, "Error while initializing serial port\n");
-        exit(1);
+        fprintf(stderr, "[ERR] Error while initializing serial port %s\n", port);
+        return NULL;
     }
 
     /*baudrate 115200, 8 bits, no parity, 1 stop bit */
-    set_interface_attribs(c->fd, B115200);
-    //set_blocking(c->fd, 0);
+    if (set_interface_attribs(c->fd, B115200) != 0) {
+        fprintf(stderr, "[WARN] set_interface_attribs return unexpected code\n");
+        return NULL;
+    };
+    set_blocking(c->fd, 0);
 
     c->service    = NULL;
     c->next       = Modes.clients;
